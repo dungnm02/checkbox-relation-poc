@@ -3,7 +3,8 @@
 The interactive core of the **rule-set** module's *create* page. Two backend-driven tables —
 a flat **ACTION** table and a hierarchical **FIELD** tree (VIEW/EDIT columns) — whose checkboxes
 drive each other through a declarative relation config. Implements
-[design v4](./checkbox-relation-engine-design-v4.md).
+[design v5](./doc/checkbox-relation-engine-design-v5.md) — see also the human-oriented
+[developer guide](./doc/checkbox-relation-engine-dev-guide.md).
 
 Stack: Vite · React 18 · TypeScript · Redux Toolkit · Vitest.
 

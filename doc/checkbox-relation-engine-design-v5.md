@@ -11,8 +11,8 @@
 * **Implementation-proven mechanics promoted into the design** (they were discovered during the v4 build and previously lived only in code):
   * Load-time **settle pass** (§4.8) — every rule evaluated to a fixed point at compile time so dependency/visibility locks hold on *first render*.
   * **Reason-writes before checked-writes** ordering inside propagation (§4.9.3).
-  * `restoreCheckedOnSatisfy` implemented via a paired **`@restore:<ruleId>` marker** in `disabledBy` (§4.4-B).
-  * `ENABLES_ON_*` pinned down as the **inverse-polarity mirror of `DISABLES_ON_*`** with its own reason (§4.4-C), including the level-semantics equivalence table.
+  * `restoreCheckedOnSatisfy` implemented via a paired **`@restore:<ruleId>` marker** in `disabledBy` (§4.4 card B).
+  * `ENABLES_ON_*` pinned down as the **inverse-polarity mirror of `DISABLES_ON_*`** with its own reason (§4.4 card C), including the level-semantics equivalence table.
   * FE default rules **skip (not error)** when their source resolves to zero leaves (§4.4a).
 * **New deep-reference sections** (the parts of the system that can hurt the product if misunderstood): full per-primitive contract cards (§4.4), the FE-owned **Relation Contract** (§4.4b), propagation & chaining semantics (§4.9), a **special-cases catalogue** (§4.11), and a **hazard register** (§8).
 
@@ -366,7 +366,7 @@ interface CheckboxValue {
 * **Reserved entries** (no rule can remove them):
   * `"@initial"` — backend-supplied default lock (`isDisabled: true`); irrevocable for the page's lifetime.
   * `"@hidden"` — held while the leaf's region is hidden; removed only by the visibility pass.
-  * `"@restore:<ruleId>"` — the `REQUIRES` restore marker (§4.4-B); paired with its rule's lock reason, stripped together, filtered from user-facing reason displays.
+  * `"@restore:<ruleId>"` — the `REQUIRES` restore marker (§4.4 card B); paired with its rule's lock reason, stripped together, filtered from user-facing reason displays.
 * **Barrier policy (restated as normative):** propagation checked-writes skip any leaf with non-empty `disabledBy`; only the lock-owning rule writes through its own lock. A future cascade-through-locks need is an explicit per-rule `piercesDisabled` opt-in, never a weakened default (§7).
 * Plain string array — Redux-serializable; ids/reasons unique, so array semantics suffice.
 
@@ -487,6 +487,15 @@ interface EngineConfig {
 // ----- Runtime state -----
 interface CheckboxValue { checked: boolean; disabledBy: string[]; }
 type CheckboxState = Record<LeafId, CheckboxValue>;
+
+// ----- Engine events (§2, §4.5) — what the shell feeds resolveToggle -----
+type ToggleEvent =
+  | { kind: 'leaf'; id: LeafId; checked: boolean }                 // one checkbox click
+  | { kind: 'leaves'; writes: { id: LeafId; checked: boolean }[] } // normalized category-aggregate click
+
+// ----- Save surface (§4.0) — the only thing that leaves the module -----
+interface SavedLeaf { id: LeafId; isChecked: boolean; }
+declare function serializeForSave(state: CheckboxState): SavedLeaf[];  // never emits disabledBy
 ```
 
 #### 4.11 Special-Cases Catalogue
@@ -536,7 +545,7 @@ Resulting behavior: checking any EDIT auto-checks its sibling VIEW; unchecking a
   * Pure unit tests of `resolveToggle`/`settleState` over plain objects — no store, no React (§4.9, §4.8).
   * **Property test:** random configs + random click sequences → always terminate, and are idempotent (replaying the final event changes nothing) (§4.9.2, §4.9.5).
   * Per-primitive behavior tests — one per §4.4 card, including the edge-vs-level distinction and both `restoreCheckedOnSatisfy` values.
-  * The `ENABLES` ≡ inverse-`DISABLES` equivalence, asserted directly (§4.4-C).
+  * The `ENABLES` ≡ inverse-`DISABLES` equivalence, asserted directly (§4.4 card C).
   * Write-ordering regression: `REQUIRES` + restore, which fails if checked-writes precede reason-writes (§4.9.3).
   * Wildcard binding: `$EDIT → $VIEW` pairs same-path/same-status only; foreign-status pins fail at load (§4.3).
   * FE-default merge: defaults present with no incoming relations; override by matching id; `fe.*` shadow warning; zero-leaf skip (§4.4a).
