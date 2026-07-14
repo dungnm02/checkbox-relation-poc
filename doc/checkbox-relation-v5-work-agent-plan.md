@@ -1,7 +1,7 @@
 # Work-Agent Plan — Gap Analysis & Implementation of the Checkbox Relation Engine (v5)
 
 **Audience:** the coding agent on the work laptop, operating inside the real project.
-**Inputs you have:** (1) this plan, (2) `checkbox-relation-engine-design-v5.md` (the target design — normative), (3) a set of test files (the executable specification — listed in §0.2), (4) `checkbox-relation-v5-test-cases.md` (the readable test-case specification: every case has an ID, fixture, steps, and expected result — implement it per its own checklist, mapping case IDs to the traveling test files before writing new ones), (5) real backend payloads / API access, which the operator will provide.
+**Inputs you have:** (1) this plan, (2) `checkbox-relation-engine-design-v5.md` (the target design — normative), (3) a set of test files (the executable specification — listed in §0.2), (4) `checkbox-relation-v5-test-cases.md` (the readable test-case specification: every case has an ID, fixture, steps, and expected result — implement it per its own checklist, mapping case IDs to the traveling test files before writing new ones), (5) `checkbox-relation-v5-performance-guide.md` (**binding for Phase 3** — constrains where work may happen: compile-once, seeded propagation, render discipline; its §8 acceptance gates are part of Gate 3), (6) real backend payloads / API access, which the operator will provide.
 **Inputs you do NOT have:** the reference implementation's source code. Do not ask for it, do not try to reconstruct file-by-file — you are reimplementing from the design + tests, in this project's own idioms.
 
 Work the phases **in order**. Each phase ends with a **gate** — concrete evidence you must produce before moving on. If a gate fails, stop and report; do not improvise around it.
@@ -120,20 +120,27 @@ Also run the reverse direction: v5 features with **no legacy counterpart** (sett
 
 Mirror v5 §5, in this project's idioms. The store is **Redux Toolkit** — the shell design ports conceptually as-is: one slice `Record<LeafId, CheckboxValue>` keyed by the full four-segment ID, `createSelector` for every derived value (category aggregates and region visibility MUST be memoized — a fresh object per call breaks react-redux and floods warnings), and one hook that is the sole writer (one `getState`-equivalent read, one dispatch per interaction).
 
+**Read `checkbox-relation-v5-performance-guide.md` before writing any Phase-3 code and keep its
+phase ledger (§1) open while you work.** The legacy engine's measured failure was per-click
+compile/settle work (~70ms at 140 nodes); the guide's anti-pattern table (§7) is a review
+checklist for every file you touch, and its acceptance gates (§8) — compile counter, one dispatch
+per click, seeded-BFS dequeue counts, reference-stability tests, profiler budgets — are **part of
+Gate 3** below.
+
 Each step = implement + make its Class-A tests pass + typecheck clean, before the next:
 
-1. **Adapter** — `toEngineConfig()` / `serializeForSave()` per the approved decision record, with fixture tests built from the real payloads. This is the only step where real-payload shape appears.
+1. **Adapter** — `toEngineConfig()` / `serializeForSave()` per the approved decision record, with fixture tests built from the real payloads. This is the only step where real-payload shape appears. **Wire config in per performance-guide §9: compile in the fetch layer (RTK Query `transformResponse`) and seed the working slice from the fulfilled action — never mirror the fetch cache into the slice with a `useEffect`.** This is also where you decide the BE→engine sync shape; if the config can change mid-edit (§9.5), stop and raise it with the operator rather than re-seeding over edits.
 2. **ID parser** (§4.1) → `parseId.test.ts` green.
 3. **Seeding + tree normalization** (§4.2, §4.5) → `seed.test.ts`, `tree.test.ts` green.
 4. **Expression compiler + validation** (§4.3) → `expand.test.ts` green. Every load-error class throws with an actionable message.
 5. **FE-default merge** (§4.4a) → `merge.test.ts` green.
 6. **Pure engine** — effects for all 12 primitives + condition, adjacency index, `resolveToggle` BFS with the §4.9.3 ordering and §4.9.4 tie-breaks, visibility reconciliation, `settleState` (§4.4, §4.6, §4.8, §4.9) → `engine.test.ts`, `disabled.test.ts`, `derive.test.ts`, `mockBackend.test.ts`, property test green. Re-read §0.3 before this step.
    Then implement `checkbox-relation-v5-test-cases.md` in full (suite order L → N → D → C → VIS → H → E per its checklist) — the traveling files cover many of its cases already; map IDs first, add only the missing ones.
-7. **RTK shell** — slice, memoized selectors, single-writer hook; rewrite Class-B tests against your components (preserve every assertion's intent, especially: exactly one dispatch per click; hide clears + announces; reshow comes back empty).
+7. **State-container + shell** — decide the container per performance-guide §10 before writing it: **because this project keeps RTK Query, the store already exists → put the checkbox state in one feature-scoped RTK slice** (selectors satisfy fine-grained re-render; `matchFulfilled` satisfies effect-free seeding). Do **not** split it into a separate `useReducer` (§10.5 trap) and never read cell state through Context (§10.3). Then: memoized selectors, single-writer hook; rewrite Class-B tests against your components (preserve every assertion's intent, especially: exactly one dispatch per click; hide clears + announces; reshow comes back empty). If the operator later decides to drop RTK Query too, re-run the §10.6 procedure — the container answer changes.
 8. **UI** — reuse/restyle the project's existing table components where possible; categories tri-state derived, never stored; disabled cells expose a reason (reserved markers filtered, §4.7).
 9. **Parity cutover** — encode the approved parity-audit config JSON as the real per-resource configs; add one behavior test per legacy inventory row; run legacy and new side-by-side on at least one resource if the project's feature-flag infrastructure allows; remove legacy writers only after the single-write-path check (grep: no dispatch to the slice outside the engine hook).
 
-**Gate 3 (final):** all Class-A tests pass unmodified (imports aside) · rewritten Class-B equivalents pass · every parity row has a passing test or a signed-off `EXPRESSIBLE-WITH-CHANGE` note · typecheck + build clean · a closing report mapping each gap-report item to its resolution.
+**Gate 3 (final):** all Class-A tests pass unmodified (imports aside) · rewritten Class-B equivalents pass · every parity row has a passing test or a signed-off `EXPRESSIBLE-WITH-CHANGE` note · typecheck + build clean · **performance-guide §8 acceptance gates pass** (compile-count, dispatch-count, dequeue-bound, reference-stability tests, profiler budgets — include the numbers as evidence) · a closing report mapping each gap-report item to its resolution.
 
 ---
 
