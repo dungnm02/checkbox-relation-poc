@@ -1,7 +1,7 @@
 // Pure UI helpers (no React, no store): derive category aggregate state (§4.5) and normalize
 // user clicks into ToggleEvents (§4.4, §4.5). Kept in core so they are unit-testable.
 
-import type { CheckboxState, LeafId } from '../types';
+import type { CheckboxState, CheckboxValue, LeafId } from '../types';
 import type { ToggleEvent } from './resolveToggle';
 
 export interface AggregateState {
@@ -10,8 +10,13 @@ export interface AggregateState {
   disabled: boolean; // all descendant leaves disabled
 }
 
-export function aggregate(state: CheckboxState, leafIds: LeafId[]): AggregateState {
-  const vals = leafIds.map((id) => state[id]).filter((v): v is NonNullable<typeof v> => Boolean(v));
+/**
+ * Tri-state aggregate over already-resolved leaf values (unknown ids passed as undefined and
+ * skipped). Kept value-based so selectors can memoize on the individual leaf references (§6) —
+ * the whole-slice-keyed form re-ran every category on every click.
+ */
+export function aggregateValues(values: (CheckboxValue | undefined)[]): AggregateState {
+  const vals = values.filter((v): v is CheckboxValue => Boolean(v));
   if (vals.length === 0) return { checked: false, indeterminate: false, disabled: false };
   const checkedCount = vals.filter((v) => v.checked).length;
   const allChecked = checkedCount === vals.length;
@@ -20,6 +25,10 @@ export function aggregate(state: CheckboxState, leafIds: LeafId[]): AggregateSta
     indeterminate: !allChecked && checkedCount > 0,
     disabled: vals.every((v) => v.disabledBy.length > 0),
   };
+}
+
+export function aggregate(state: CheckboxState, leafIds: LeafId[]): AggregateState {
+  return aggregateValues(leafIds.map((id) => state[id]));
 }
 
 /** A leaf click → toggle event, or null if the leaf is disabled / unknown (no-op). */
