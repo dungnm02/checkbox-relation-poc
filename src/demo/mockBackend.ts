@@ -323,8 +323,228 @@ export const relationTypesBackend: BackendConfig = {
   relations: relationTypesRelations,
 };
 
+// ---------------------------------------------------------------------------------------
+// STRESS_TEST — a large, deliberately over-connected resource for stress-testing the POC:
+// deep chains, wide groups, multi-level locks, and a big nested field tree, so perf and
+// convergence can be exercised well past the ~140-node case in the performance guide.
+// Tune the constants below to scale it further.
+// ---------------------------------------------------------------------------------------
+
+const ST = 'STRESS_TEST';
+const STRESS_STATUSES = ['DRAFT', 'REVIEW', 'PUBLISHED'] as const;
+
+const CHAIN_LENGTH = 10; // cascade chain: chain_1 → chain_2 → … → chain_10
+const EXCL_GROUP_SIZE = 8; // mutual-exclusive group, per-member declarations (dev-guide recipe)
+const REQUIRES_CHAIN_LENGTH = 5; // stage_2 requires stage_1, stage_3 requires stage_2, …
+const MIRROR_CHAIN_LENGTH = 4; // bidirectional mirror chain: mirror_1 <-> mirror_2 <-> … <-> mirror_4
+const BULK_GROUP_SIZE = 6; // GROUP_ALL select-all-header target count
+const ADV_OPT_COUNT = 5; // condition-gated cascade targets
+const FIELD_CATEGORIES = 4;
+const FIELD_SUBCATEGORIES = 3;
+const FIELD_LEAVES_PER_SUB = 6; // 4 * 3 * 6 = 72 leaves = 144 VIEW/EDIT checkboxes
+
+const stId = (status: string, path: string) => `${ST}/${status}/ACTION/${path}`;
+/** Author once with a status wildcard — expandRules fans this out per status (dev-guide recipe);
+ * relations never cross statuses because STATUS always binds to the source's own status (§4.3). */
+const stWild = (path: string) => `${ST}/*/ACTION/${path}`;
+
+function stressActions(status: string): { id: string; isChecked: boolean; isDisabled: boolean }[] {
+  const a = (path: string, isChecked = false) => ({ id: stId(status, path), isChecked, isDisabled: false });
+  const out = [
+    ...Array.from({ length: CHAIN_LENGTH }, (_, i) => a(`chain_${i + 1}`)),
+    ...Array.from({ length: EXCL_GROUP_SIZE }, (_, i) => a(`excl_${i + 1}`, i === 0)), // excl_1 starts selected
+    a('stage_1'),
+    ...Array.from({ length: REQUIRES_CHAIN_LENGTH - 1 }, (_, i) => a(`stage_${i + 2}`, true)), // start checked → settle locks them
+    ...Array.from({ length: MIRROR_CHAIN_LENGTH }, (_, i) => a(`mirror_${i + 1}`)),
+    a('maintenance_mode', true), // starts checked → ops_1..4 start locked+unchecked
+    ...Array.from({ length: 4 }, (_, i) => a(`ops_${i + 1}`)),
+    a('ops_1_sub'),
+    a('power_user_mode'),
+    a('beta_features'),
+    a('advanced_export'),
+    ...Array.from({ length: ADV_OPT_COUNT }, (_, i) => a(`adv_opt_${i + 1}`)),
+    a('safe_mode', true),
+    a('danger_action'),
+    a('danger_child_1'),
+    a('danger_child_2'),
+    a('theme_dark'),
+    a('theme_light_flag', true), // opposite of theme_dark, consistent with INVERSE
+    a('bulk_select_all'),
+    ...Array.from({ length: BULK_GROUP_SIZE }, (_, i) => a(`bulk_${i + 1}`)),
+    a('enable_all_fields', true), // field tree visible by default
+    a('enable_advanced_fields'),
+  ];
+  return out;
+}
+
+function stressFieldTree(status: string): FieldNode[] {
+  const leaf = (name: string, path: string): FieldNode => ({
+    isCategory: false,
+    name,
+    view: { id: `${ST}/${status}/VIEW/${path}`, isChecked: false, isDisabled: false },
+    edit: { id: `${ST}/${status}/EDIT/${path}`, isChecked: false, isDisabled: false },
+  });
+  return Array.from({ length: FIELD_CATEGORIES }, (_, c) => ({
+    isCategory: true as const,
+    name: `Category ${c + 1}`,
+    children: Array.from({ length: FIELD_SUBCATEGORIES }, (_, sub) => ({
+      isCategory: true as const,
+      name: `Category ${c + 1} / Sub ${sub + 1}`,
+      children: Array.from({ length: FIELD_LEAVES_PER_SUB }, (_, l) =>
+        leaf(`Field ${c + 1}.${sub + 1}.${l + 1}`, `cat${c + 1}.sub${sub + 1}.field${l + 1}`),
+      ),
+    })),
+  }));
+}
+
+function stressStatusContent(status: string): StatusContent {
+  return { status, action: stressActions(status), field: stressFieldTree(status) };
+}
+
+/** The two condition-gated relations: condition ids are concrete `LeafId`s (never expanded like
+ * a target expression, §4.4), so — unlike every other stress relation — these must be authored
+ * once per status rather than with a status wildcard. */
+function stressConditionRelations(status: string): NonNullable<BackendConfig['relations']> {
+  return [
+    {
+      id: `adv.export.${status}`,
+      sourceId: stId(status, 'advanced_export'),
+      relationships: [
+        {
+          id: `adv.export.${status}`,
+          type: 'CASCADES_CHECK',
+          targets: Array.from({ length: ADV_OPT_COUNT }, (_, i) => stId(status, `adv_opt_${i + 1}`)),
+          condition: { all: [stId(status, 'power_user_mode'), stId(status, 'beta_features')] },
+        },
+      ],
+    },
+    {
+      id: `danger.gate.${status}`,
+      sourceId: stId(status, 'danger_action'),
+      relationships: [
+        {
+          id: `danger.gate.${status}`,
+          type: 'CASCADES_CHECK',
+          targets: [stId(status, 'danger_child_1'), stId(status, 'danger_child_2')],
+          condition: { not: stId(status, 'safe_mode') }, // only while NOT in safe mode
+        },
+      ],
+    },
+  ];
+}
+
+const stressWildcardRelations: NonNullable<BackendConfig['relations']> = [
+  // Deep cascade chain — one hop per rule; the BFS walks all CHAIN_LENGTH-1 hops in one click.
+  ...Array.from({ length: CHAIN_LENGTH - 1 }, (_, i) => ({
+    id: `chain.link.${i + 1}`,
+    sourceId: stWild(`chain_${i + 1}`),
+    relationships: [
+      {
+        id: `chain.link.${i + 1}`,
+        type: 'CASCADES_CHECK' as const,
+        targets: [stWild(`chain_${i + 2}`)],
+      },
+    ],
+  })),
+  // Wide mutual-exclusive group — per-member declarations (dev-guide: a single A→[B,C] rule
+  // doesn't clear A when B is checked, so every member needs its own rule).
+  ...Array.from({ length: EXCL_GROUP_SIZE }, (_, i) => ({
+    id: `excl.member.${i + 1}`,
+    sourceId: stWild(`excl_${i + 1}`),
+    relationships: [
+      {
+        id: `excl.member.${i + 1}`,
+        type: 'MUTUAL_EXCLUSIVE' as const,
+        targets: Array.from({ length: EXCL_GROUP_SIZE }, (_, j) => j)
+          .filter((j) => j !== i)
+          .map((j) => stWild(`excl_${j + 1}`)),
+      },
+    ],
+  })),
+  // Multi-level REQUIRES chain — checking stage_1 must release+restore stage_2..N in one click.
+  ...Array.from({ length: REQUIRES_CHAIN_LENGTH - 1 }, (_, i) => ({
+    id: `stage.requires.${i + 2}`,
+    sourceId: stWild(`stage_${i + 2}`),
+    relationships: [
+      {
+        id: `stage.requires.${i + 2}`,
+        type: 'REQUIRES' as const,
+        targets: [stWild(`stage_${i + 1}`)],
+        restoreCheckedOnSatisfy: true,
+      },
+    ],
+  })),
+  // Bidirectional mirror chain — toggling any member ripples through every link.
+  ...Array.from({ length: MIRROR_CHAIN_LENGTH - 1 }, (_, i) => ({
+    id: `mirror.link.${i + 1}`,
+    sourceId: stWild(`mirror_${i + 1}`),
+    relationships: [
+      { id: `mirror.link.${i + 1}`, type: 'BIDIRECTIONAL' as const, targets: [stWild(`mirror_${i + 2}`)] },
+    ],
+  })),
+  // Two-tier lock mesh: maintenance_mode locks ops_1..4; ops_1, once actually checked, locks a
+  // nested leaf of its own — a barrier stacked behind another barrier.
+  {
+    id: 'maint.lock',
+    sourceId: stWild('maintenance_mode'),
+    relationships: [
+      {
+        id: 'maint.lock',
+        type: 'DISABLES_ON_CHECK',
+        targets: [stWild('ops_1'), stWild('ops_2'), stWild('ops_3'), stWild('ops_4')],
+        forceCheckedValue: false,
+      },
+    ],
+  },
+  {
+    id: 'ops1.lock.sub',
+    sourceId: stWild('ops_1'),
+    relationships: [
+      {
+        id: 'ops1.lock.sub',
+        type: 'DISABLES_ON_CHECK',
+        targets: [stWild('ops_1_sub')],
+        forceCheckedValue: false,
+      },
+    ],
+  },
+  {
+    id: 'theme.inverse',
+    sourceId: stWild('theme_dark'),
+    relationships: [{ id: 'theme.inverse', type: 'INVERSE', targets: [stWild('theme_light_flag')] }],
+  },
+  {
+    id: 'bulk.group',
+    sourceId: stWild('bulk_select_all'),
+    relationships: [
+      {
+        id: 'bulk.group',
+        type: 'GROUP_ALL',
+        targets: Array.from({ length: BULK_GROUP_SIZE }, (_, i) => stWild(`bulk_${i + 1}`)),
+      },
+    ],
+  },
+];
+
+export const stressTestBackend: BackendConfig = {
+  resourceType: 'STRESS',
+  resourceName: ST,
+  statuses: [...STRESS_STATUSES],
+  content: STRESS_STATUSES.map(stressStatusContent),
+  relations: [...stressWildcardRelations, ...STRESS_STATUSES.flatMap(stressConditionRelations)],
+  visibility: [
+    {
+      region: 'FIELD',
+      controlledBy: [stWild('enable_all_fields'), stWild('enable_advanced_fields')],
+      showWhen: 'anyChecked',
+      whenHidden: 'clearAndLock',
+    },
+  ],
+};
+
 export const demoResources: { key: string; label: string; backend: BackendConfig }[] = [
   { key: 'ai', label: 'FEATURE · AI_FEATURE', backend: aiFeatureBackend },
   { key: 'report', label: 'DOCUMENT · REPORT', backend: reportBackend },
   { key: 'relations', label: 'DEMO · RELATION_TYPES (all 12 primitives)', backend: relationTypesBackend },
+  { key: 'stress', label: 'STRESS · STRESS_TEST (heavy, ~600 nodes)', backend: stressTestBackend },
 ];
